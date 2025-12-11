@@ -102,9 +102,187 @@ Example damage metadata:
 pip install pillow numpy
 ```
 
-## Step 2: Preprocess Damaged Dataset
+## Step 3: Organize Dataset into Splits
 
-Applies the preprocessing pipeline from `processor.ref` to damaged images:
+Structures the preprocessed dataset into train/val/test splits with a manifest file.
+
+### Usage
+
+```bash
+# Create organized dataset with default splits (70% train, 15% val, 15% test)
+python3 scripts/organize_dataset.py \
+  --input-dir dataset/preprocessed \
+  --output-dir dataset/organized
+
+# Custom splits (60% train, 20% val, 20% test)
+python3 scripts/organize_dataset.py \
+  --input-dir dataset/preprocessed \
+  --output-dir dataset/organized \
+  --train-split 0.6 \
+  --val-split 0.2
+```
+
+### Options
+
+- `--input-dir`: Source folder with preprocessed images and JSONs (default: `dataset/preprocessed`)
+- `--output-dir`: Output folder for organized dataset (default: `dataset/organized`)
+- `--train-split`: Fraction for training set (default: 0.7)
+- `--val-split`: Fraction for validation set (default: 0.15, remainder is test)
+- `--seed`: Random seed for reproducibility (default: 42)
+
+### Output
+
+Creates directory structure:
+```
+dataset/organized/
+├── train/           # Training samples
+│   ├── 0_21_0.jpg
+│   ├── 0_21_0.json
+│   └── ...
+├── val/             # Validation samples
+│   └── ...
+├── test/            # Test samples
+│   └── ...
+└── manifest.json    # Metadata about all samples
+```
+
+The manifest file contains split information and metadata for each sample.
+
+## Step 5: Clean Dataset
+
+Removes text shapes (bounding boxes) that overlap with damaged areas, while **keeping the damage metadata**.
+This allows models to:
+- Learn to detect damage regions (using damage boxes)
+- Not train on indistinguishable text in damaged areas (text boxes removed)
+
+### Usage
+
+```bash
+# Remove text shapes in damaged areas, keep damage metadata
+python3 scripts/clean_dataset.py \
+  --input-dir dataset/organized \
+  --output-dir dataset/cleaned
+
+# Only mark text shapes as damaged (keep them with 'damaged' flag)
+python3 scripts/clean_dataset.py \
+  --input-dir dataset/organized \
+  --output-dir dataset/cleaned \
+  --mode mark
+
+# Process only training set with custom threshold (40% overlap = remove)
+python3 scripts/clean_dataset.py \
+  --input-dir dataset/organized \
+  --output-dir dataset/cleaned \
+  --split train \
+  --threshold 0.4
+```
+
+### Options
+
+- `--input-dir`: Path to organized dataset (default: `dataset/organized`)
+- `--output-dir`: Path to write cleaned dataset (default: `dataset/cleaned`)
+- `--mode`: `remove` to delete text shapes in damage areas (default), `mark` to add `"damaged"` flag
+- `--threshold`: Intersection threshold 0.0-1.0 (default: 0.25, meaning ≥25% overlap = remove text)
+- `--split`: Process specific split: train/val/test/all (default: all)
+
+### Output
+
+Creates cleaned dataset preserving damage metadata:
+```
+dataset/cleaned/
+├── train/
+│   ├── image.jpg
+│   ├── image.json  # Text boxes in damage areas removed, damage info kept
+│   └── ...
+├── val/
+└── test/
+```
+
+Each JSON includes:
+- All original **damage** metadata (boxes for spots/distortions)
+- Filtered **shapes** (text boxes not overlapping damage removed)
+- **cleaning** metadata showing what was removed
+
+Example:
+```json
+{
+  "damage": {
+    "applied": [
+      {"type": "spot", "center": [...], "radius": 85},
+      {"type": "distortion", "box": [...]}
+    ]
+  },
+  "shapes": [
+    {"label": "text1", "points": [...]},
+    {"label": "text3", "points": [...]}
+  ],
+  "cleaning": {
+    "mode": "remove",
+    "threshold": 0.25,
+    "original_shapes": 5,
+    "cleaned_shapes": 3,
+    "removed": 2
+  }
+}
+```
+
+## Step 6: Visualize Cleaned Dataset
+
+Visualize the cleaned dataset to verify damaged shapes were removed:
+
+```bash
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/cleaned \
+  --split train \
+  --num-samples 5 \
+  --output-dir visualizations_cleaned/
+```
+
+Now the visualization shows no boxes for shapes that were in damaged areas.
+
+### Usage
+
+```bash
+# Visualize a random sample from training set
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/organized \
+  --split train
+
+# Visualize specific sample
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/organized \
+  --split train \
+  --sample-id 0_21_0
+
+# Visualize multiple random samples and save to folder
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/organized \
+  --split train \
+  --num-samples 5 \
+  --output-dir visualizations/
+
+# Visualize from validation set
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/organized \
+  --split val
+```
+
+### Options
+
+- `--dataset-dir`: Path to organized dataset (default: `dataset/organized`)
+- `--split`: Dataset split to visualize: train/val/test (default: train)
+- `--sample-id`: Specific sample ID (random if not specified)
+- `--num-samples`: Number of random samples to visualize (default: 1)
+- `--output-dir`: Save visualizations to this directory (display if not specified)
+
+### Output
+
+Visualizations show:
+- Image with color-coded bounding boxes for each shape
+- Text labels for each shape
+- Damage type information (spot, distortion) if present
+- Image dimensions and number of shapes
+- Occlusion flags if applicable
 
 1. **Background subtraction**: Per-channel dilation → median blur → difference → normalization
 2. **Enhancement adjustments**:
@@ -169,7 +347,19 @@ python3 scripts/preprocess_damaged.py \
   --input-dir dataset/damaged \
   --output-dir dataset/preprocessed
 
-# Final output: dataset/preprocessed/ contains preprocessed damaged images ready for OCR training
+# 4. Organize into train/val/test splits
+python3 scripts/organize_dataset.py \
+  --input-dir dataset/preprocessed \
+  --output-dir dataset/organized
+
+# 5. Visualize samples (optional)
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/organized \
+  --split train \
+  --num-samples 5 \
+  --output-dir visualizations/
+
+# Final output: dataset/organized/ contains structured dataset ready for OCR training
 ```
 
 ## Quick Test Workflow

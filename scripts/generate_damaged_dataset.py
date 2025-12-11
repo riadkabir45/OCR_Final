@@ -206,9 +206,13 @@ def _create_irregular_spot_overlay(size: tuple[int, int], center: tuple[int, int
     dy = yy - cy
     d = np.sqrt(dx * dx + dy * dy)
 
-    # base radial falloff
+    # base radial falloff (smoothstep S-curve for tighter core and softer edge)
     r = radius
-    norm = np.clip(1.0 - (d / r), 0.0, 1.0)
+    t = np.clip(1.0 - (d / r), 0.0, 1.0)
+    # smootherstep for steeper center and softer edge
+    smooth = t * t * t * (t * (6 * t - 15) + 10)
+    # bias toward darker core; exponent <1 sharpens center falloff
+    base = smooth ** 0.5  # sharper at center
     # irregularity: smooth noise
     noise = (np.random.rand(bh, bw).astype(np.float32) - 0.5) * 0.6
     # smooth noise using PIL GaussianBlur
@@ -217,15 +221,15 @@ def _create_irregular_spot_overlay(size: tuple[int, int], center: tuple[int, int
     noise = np.array(noise_img).astype(np.float32) / 255.0
     noise = (noise - 0.5) * 0.6
 
-    irregular = norm * (1.0 + noise)
+    irregular = base * (1.0 + noise)
     irregular = np.clip(irregular, 0.0, 1.0)
-    # sharpen the edge a bit
-    alpha = (irregular ** 1.2) * 255.0 * intensity
+    # S-shaped opacity falloff; smaller exponent keeps dark area closer to target radius
+    alpha = (irregular ** 0.55) * 255.0 * intensity
 
     # color: center near-black, edge slightly brownish
     center_col = np.array([10, 10, 10], dtype=np.uint8)
     edge_col = np.array([40, 25, 10], dtype=np.uint8)
-    mix = np.expand_dims(1.0 - np.clip(d / (r * 1.05), 0.0, 1.0), axis=2)
+    mix = np.expand_dims(base, axis=2)
     rgb = (center_col * mix + edge_col * (1 - mix)).astype(np.uint8)
 
     overlay_arr = np.zeros((bh, bw, 4), dtype=np.uint8)
