@@ -119,31 +119,31 @@ def clean_json(json_path: str, removal_mode: str = "remove", threshold: float = 
     return meta
 
 
-def process_split(input_split_dir: str, output_split_dir: str, removal_mode: str = "remove", 
+def process_files(input_dir: str, output_dir: str, removal_mode: str = "remove", 
                   threshold: float = 0.25) -> None:
-    """Process all samples in a split directory."""
-    os.makedirs(output_split_dir, exist_ok=True)
+    """Process all samples in a directory."""
+    os.makedirs(output_dir, exist_ok=True)
     
-    json_files = [f for f in os.listdir(input_split_dir) if f.endswith(".json")]
+    json_files = [f for f in os.listdir(input_dir) if f.endswith(".json")]
     
     total_removed = 0
     total_kept = 0
     
     for json_fname in sorted(json_files):
-        json_path = os.path.join(input_split_dir, json_fname)
+        json_path = os.path.join(input_dir, json_fname)
         img_fname = json_fname.replace(".json", ".jpg")
-        img_path = os.path.join(input_split_dir, img_fname)
+        img_path = os.path.join(input_dir, img_fname)
         
         # Clean JSON
         cleaned_meta = clean_json(json_path, removal_mode, threshold)
         
         # Copy image
-        dst_img = os.path.join(output_split_dir, img_fname)
+        dst_img = os.path.join(output_dir, img_fname)
         if os.path.exists(img_path):
             shutil.copy2(img_path, dst_img)
         
         # Write cleaned JSON
-        dst_json = os.path.join(output_split_dir, json_fname)
+        dst_json = os.path.join(output_dir, json_fname)
         with open(dst_json, "w", encoding="utf-8") as f:
             json.dump(cleaned_meta, f, ensure_ascii=False, indent=2)
         
@@ -155,35 +155,27 @@ def process_split(input_split_dir: str, output_split_dir: str, removal_mode: str
         status = f"Removed: {removed}, Kept: {kept}"
         print(f"{json_fname}: {status}")
     
-    print(f"\n{os.path.basename(output_split_dir)} summary: Total removed: {total_removed}, Total kept: {total_kept}")
+    print(f"\nSummary: Total removed: {total_removed}, Total kept: {total_kept}")
 
 
 def main():
     p = argparse.ArgumentParser(description="Clean dataset by removing damaged shapes from annotations")
-    p.add_argument("--input-dir", default="dataset/organized", 
-                   help="Path to organized dataset directory")
+    p.add_argument("--input-dir", default="dataset/preprocessed", 
+                   help="Path to preprocessed dataset directory")
     p.add_argument("--output-dir", default="dataset/cleaned", 
                    help="Path to write cleaned dataset")
     p.add_argument("--mode", choices=["remove", "mark"], default="remove",
                    help="remove: delete damaged shapes, mark: add 'damaged' flag")
     p.add_argument("--threshold", type=float, default=0.25,
                    help="Intersection threshold to consider shape damaged (0.0-1.0)")
-    p.add_argument("--split", choices=["train", "val", "test", "all"], default="all",
-                   help="Which split(s) to process")
     args = p.parse_args()
     
-    splits = ["train", "val", "test"] if args.split == "all" else [args.split]
+    if not os.path.exists(args.input_dir):
+        print(f"Input directory not found: {args.input_dir}")
+        return
     
-    for split in splits:
-        input_split = os.path.join(args.input_dir, split)
-        output_split = os.path.join(args.output_dir, split)
-        
-        if not os.path.exists(input_split):
-            print(f"Split not found: {input_split}, skipping")
-            continue
-        
-        print(f"\nProcessing {split}...")
-        process_split(input_split, output_split, args.mode, args.threshold)
+    print(f"Processing {args.input_dir}...")
+    process_files(args.input_dir, args.output_dir, args.mode, args.threshold)
     
     print(f"\nCleaned dataset saved to {args.output_dir}")
 

@@ -6,6 +6,10 @@ Displays random samples or specific sample IDs with:
 - Original image with bounding boxes and text labels
 - Damage information overlay
 - Image metadata (dimensions, number of shapes, etc.)
+
+Color modes (select with --color-mode):
+- labels (default): text/shape boxes in red, damage regions in orange
+- classic: text/shape boxes in green, damage regions in yellow
 """
 import os
 import sys
@@ -56,53 +60,71 @@ def bbox_intersection_area(b1, b2):
     return (x2 - x1) * (y2 - y1)
 
 
-def draw_sample(meta: dict, img: Image.Image, output_path: str = None) -> Image.Image:
-    """Draw image with bounding boxes, labels, damage areas, and damage info."""
+def draw_sample(meta: dict, img: Image.Image, output_path: str = None,
+                color_mode: str = "labels", thickness: int = 2,
+                show_text: bool = True, show_damage: bool = True) -> Image.Image:
+    """Draw image with bounding boxes, labels, damage areas, and damage info.
+
+    color_mode:
+      - "labels": text boxes red, damage orange
+      - "classic": text boxes green, damage yellow
+    thickness: outline thickness for boxes
+    """
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    
+
     # Try to load font, fall back to default
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
     except:
         font = ImageFont.load_default()
-    
-    # First, draw damage areas (if present)
+
+    # Select color palette
+    if color_mode == "classic":
+        COLOR_TEXT = (0, 255, 0)
+        COLOR_TEXT_LABEL_BG = (0, 255, 0)
+        COLOR_TEXT_LABEL_FG = (0, 0, 0)
+        COLOR_DAMAGE = (255, 255, 0)
+        COLOR_DAMAGE_TEXT = (255, 255, 0)
+    else:  # labels (default)
+        COLOR_TEXT = (255, 0, 0)
+        COLOR_TEXT_LABEL_BG = (255, 0, 0)
+        COLOR_TEXT_LABEL_FG = (255, 255, 255)
+        COLOR_DAMAGE = (255, 100, 0)
+        COLOR_DAMAGE_TEXT = (255, 200, 0)
+
+    # First, compute and optionally draw damage areas (if present)
     damage = meta.get("damage", {})
     applied_damages = damage.get("applied", [])
     damage_boxes = []
-    
+
     for dmg in applied_damages:
         dmg_type = dmg.get("type")
-        
+
         if dmg_type == "spot":
-            # Draw spot as circle outline
+            # Remove circular overlay; draw only rectangular box
             center = dmg.get("center", [0, 0])
             radius = dmg.get("radius", 0)
             cx, cy = center[0], center[1]
-            draw.ellipse(
-                [cx - radius, cy - radius, cx + radius, cy + radius],
-                outline=(255, 100, 0),  # orange
-                width=3
-            )
-            damage_boxes.append((cx - radius, cy - radius, cx + radius, cy + radius))
-            
+            box = dmg.get("box")
+            if isinstance(box, (list, tuple)) and len(box) == 4:
+                if show_damage:
+                    draw.rectangle(box, outline=COLOR_DAMAGE, width=max(1, thickness))
+                damage_boxes.append(tuple(box))
+            else:
+                rect = (cx - radius, cy - radius, cx + radius, cy + radius)
+                if show_damage:
+                    draw.rectangle(rect, outline=COLOR_DAMAGE, width=max(1, thickness))
+                damage_boxes.append(rect)
+
         elif dmg_type == "distortion":
-            # Draw distortion box
             box = dmg.get("box", [0, 0, 0, 0])
-            draw.rectangle(box, outline=(0, 255, 100), width=3)  # cyan-green
+            if show_damage:
+                draw.rectangle(box, outline=COLOR_DAMAGE, width=max(1, thickness))
             damage_boxes.append(tuple(box))
     
     # Draw bounding boxes and labels
     shapes = meta.get("shapes", [])
-    colors = [
-        (255, 0, 0),      # red
-        (0, 255, 0),      # green
-        (0, 0, 255),      # blue
-        (255, 255, 0),    # yellow
-        (255, 0, 255),    # magenta
-        (0, 255, 255),    # cyan
-    ]
     
     for i, shape in enumerate(shapes):
         pts = shape.get("points", [])
@@ -114,9 +136,9 @@ def draw_sample(meta: dict, img: Image.Image, output_path: str = None) -> Image.
             
             shape_bbox = (x1, y1, x2, y2)
             
-            color = colors[i % len(colors)]
-            # Draw rectangle
-            draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+            # Draw rectangle for text/shape
+            if show_text:
+                draw.rectangle([x1, y1, x2, y2], outline=COLOR_TEXT, width=max(1, thickness))
             
             # Check if shape is occluded or damaged
             occluded = shape.get("occluded", False)
@@ -132,14 +154,14 @@ def draw_sample(meta: dict, img: Image.Image, output_path: str = None) -> Image.
                         break
             
             # Draw label only if not occluded/damaged
-            if not occluded and not is_damaged:
+            if show_text and (not occluded and not is_damaged):
                 label = shape.get("label", f"Shape {i}")
                 
                 # Draw text background
                 bbox = draw.textbbox((x1, y1 - 15), label, font=font)
-                draw.rectangle(bbox, fill=color)
-                draw.text((x1, y1 - 15), label, fill=(255, 255, 255), font=font)
-            else:
+                draw.rectangle(bbox, fill=COLOR_TEXT_LABEL_BG)
+                draw.text((x1, y1 - 15), label, fill=COLOR_TEXT_LABEL_FG, font=font)
+            elif show_text:
                 # Draw indicator for hidden label
                 indicator = "[HIDDEN]" if is_damaged else "[OCCLUDED]"
                 draw.text((x1, y1 - 15), indicator, fill=(200, 0, 0), font=font)
@@ -150,7 +172,7 @@ def draw_sample(meta: dict, img: Image.Image, output_path: str = None) -> Image.
         for dmg in applied_damages:
             dmg_type = dmg.get("type", "unknown")
             text = f"Damage: {dmg_type}"
-            draw.text((10, text_y), text, fill=(255, 200, 0), font=font)
+            draw.text((10, text_y), text, fill=COLOR_DAMAGE_TEXT, font=font)
             text_y += 20
     
     # Draw metadata (top-right)
@@ -177,24 +199,20 @@ def draw_sample(meta: dict, img: Image.Image, output_path: str = None) -> Image.
     return img
 
 
-def visualize_sample(dataset_dir: str, split: str, sample_id: str = None, output_dir: str = None) -> None:
-    """Visualize a single sample or random sample from a split."""
-    split_dir = os.path.join(dataset_dir, split)
-    
-    if not os.path.exists(split_dir):
-        print(f"Split directory not found: {split_dir}")
+def visualize_sample(dataset_dir: str, sample_id: str = None, output_dir: str = None,
+                     color_mode: str = "labels", thickness: int = 2,
+                     boxes: str = "both") -> None:
+    """Visualize a single sample from dataset."""
+    if not os.path.exists(dataset_dir):
+        print(f"Dataset directory not found: {dataset_dir}")
         return
     
-    # If no sample_id, pick a random one
     if not sample_id:
-        json_files = [f for f in os.listdir(split_dir) if f.endswith(".json")]
-        if not json_files:
-            print(f"No samples in {split}")
-            return
-        sample_id = random.choice(json_files).replace(".json", "")
+        print("Error: sample_id must be provided to visualize_sample().")
+        return
     
-    print(f"\nVisualizing {split}/{sample_id}...")
-    meta, img = load_sample(split_dir, sample_id)
+    print(f"\nVisualizing {sample_id}...")
+    meta, img = load_sample(dataset_dir, sample_id)
     
     if meta is None:
         print("Failed to load sample")
@@ -204,8 +222,13 @@ def visualize_sample(dataset_dir: str, split: str, sample_id: str = None, output
         print("Failed to load image")
         return
     
+    # Resolve box visibility
+    show_text = boxes in ("both", "text")
+    show_damage = boxes in ("both", "damage")
+
     # Draw
-    visualized = draw_sample(meta, img.copy())
+    visualized = draw_sample(meta, img.copy(), color_mode=color_mode, thickness=thickness,
+                             show_text=show_text, show_damage=show_damage)
     
     # Display or save
     if output_dir:
@@ -228,24 +251,44 @@ def visualize_sample(dataset_dir: str, split: str, sample_id: str = None, output
 
 
 def main():
-    p = argparse.ArgumentParser(description="Visualize preprocessed dataset samples")
-    p.add_argument("--dataset-dir", default="dataset/organized", 
-                   help="Path to organized dataset directory")
-    p.add_argument("--split", default="train", choices=["train", "val", "test"],
-                   help="Dataset split to visualize")
+    p = argparse.ArgumentParser(description="Visualize dataset samples")
+    p.add_argument("--dataset-dir", default="dataset/cleaned", 
+                   help="Path to dataset directory")
     p.add_argument("--sample-id", default=None,
-                   help="Specific sample ID to visualize (random if not specified)")
-    p.add_argument("--num-samples", type=int, default=1,
-                   help="Number of random samples to visualize")
+                   help="Specific sample ID to visualize (all if not specified)")
     p.add_argument("--output-dir", default=None,
                    help="Save visualizations to this directory (show if not specified)")
+    p.add_argument("--color-mode", choices=["labels", "classic"], default="labels",
+                   help="Color scheme: 'labels' = text red & damage orange (default), 'classic' = text green & damage yellow")
+    p.add_argument("--thickness", type=int, default=2,
+                   help="Outline thickness for boxes")
+    p.add_argument("--boxes", choices=["both", "text", "damage", "none"], default="both",
+                   help="Which boxes to draw: both (default), text, damage, or none")
     args = p.parse_args()
     
-    # Visualize samples
-    for i in range(args.num_samples):
-        visualize_sample(args.dataset_dir, args.split, args.sample_id, args.output_dir)
-        if args.sample_id:
-            break  # Only visualize specified sample once
+    # If sample_id provided, visualize just that one
+    if args.sample_id:
+        visualize_sample(args.dataset_dir, args.sample_id, args.output_dir,
+                         color_mode=args.color_mode, thickness=args.thickness,
+                         boxes=args.boxes)
+    else:
+        # Visualize all samples
+        if not os.path.exists(args.dataset_dir):
+            print(f"Dataset directory not found: {args.dataset_dir}")
+            return
+        
+        json_files = [f for f in os.listdir(args.dataset_dir) if f.endswith(".json")]
+        if not json_files:
+            print(f"No samples in {args.dataset_dir}")
+            return
+        
+        json_files.sort()
+        print(f"Visualizing {len(json_files)} samples from {args.dataset_dir}")
+        for json_file in json_files:
+            sample_id = json_file.replace(".json", "")
+            visualize_sample(args.dataset_dir, sample_id, args.output_dir,
+                             color_mode=args.color_mode, thickness=args.thickness,
+                             boxes=args.boxes)
 
 
 if __name__ == "__main__":

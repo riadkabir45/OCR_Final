@@ -65,6 +65,9 @@ python3 scripts/generate_damaged_dataset.py \
 - `--limit`: Process only first N files (default: 0 = all files)
 - `--seed`: Random seed for reproducibility (optional)
 - `--overwrite`: Overwrite existing output files
+- `--reduce-damage-boxes`: Reduce damage boxes to visible area using grayscale difference
+- `--diff-threshold`: Grayscale abs-diff threshold (0-255) to consider a pixel damaged (default: 20)
+- `--min-damage-pixels`: Minimum count of above-threshold pixels within a box to shrink it (default: 32)
 
 ### Output
 
@@ -102,53 +105,78 @@ Example damage metadata:
 pip install pillow numpy
 ```
 
-## Step 3: Organize Dataset into Splits
+## Step 2: Visualize Dataset
 
-Structures the preprocessed dataset into train/val/test splits with a manifest file.
+Visualize dataset samples with bounding boxes and damage overlays to inspect the data.
 
-### Usage
+### Color Modes
+
+- **labels** (default): Text/shape boxes in red, damage regions in orange
+- **classic**: Text/shape boxes in green, damage regions in yellow
+
+### Usage Examples
 
 ```bash
-# Create organized dataset with default splits (70% train, 15% val, 15% test)
-python3 scripts/organize_dataset.py \
-  --input-dir dataset/preprocessed \
-  --output-dir dataset/organized
+# Visualize a specific sample
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/damaged \
+  --sample-id 101_21_0
 
-# Custom splits (60% train, 20% val, 20% test)
-python3 scripts/organize_dataset.py \
-  --input-dir dataset/preprocessed \
-  --output-dir dataset/organized \
-  --train-split 0.6 \
-  --val-split 0.2
+# Visualize all samples and save to folder
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/damaged \
+  --output-dir out_vis \
+  --color-mode labels \
+  --thickness 3
+
+# Use classic colors with thicker lines
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/damaged \
+  --output-dir out_vis \
+  --color-mode classic \
+  --thickness 3
+
+# Draw only damage boxes
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/damaged \
+  --output-dir out_vis \
+  --boxes damage
+
+# Draw only text boxes
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/damaged \
+  --output-dir out_vis \
+  --boxes text
+
+# Draw no boxes (metadata overlays only)
+python3 scripts/visualize_dataset.py \
+  --dataset-dir dataset/damaged \
+  --output-dir out_vis \
+  --boxes none
 ```
 
 ### Options
 
-- `--input-dir`: Source folder with preprocessed images and JSONs (default: `dataset/preprocessed`)
-- `--output-dir`: Output folder for organized dataset (default: `dataset/organized`)
-- `--train-split`: Fraction for training set (default: 0.7)
-- `--val-split`: Fraction for validation set (default: 0.15, remainder is test)
-- `--seed`: Random seed for reproducibility (default: 42)
+- `--dataset-dir`: Path to dataset (default: `dataset/cleaned`)
+- `--sample-id`: Specific sample ID to visualize (if not specified, visualizes all samples)
+- `--output-dir`: Save visualizations to this directory (display if not specified)
+- `--color-mode`: Color scheme: `labels` (default) or `classic`
+- `--thickness`: Outline thickness for boxes (default: 2)
+- `--boxes`: Which boxes to draw: `both` (default), `text`, `damage`, or `none`
 
 ### Output
 
-Creates directory structure:
-```
-dataset/organized/
-├── train/           # Training samples
-│   ├── 0_21_0.jpg
-│   ├── 0_21_0.json
-│   └── ...
-├── val/             # Validation samples
-│   └── ...
-├── test/            # Test samples
-│   └── ...
-└── manifest.json    # Metadata about all samples
-```
+Visualizations show:
+- Image with color-coded bounding boxes for each shape
+- Text labels for each shape
+- Damage type information (spot, distortion) if present
+- Image dimensions and number of shapes
+- Occlusion flags if applicable
 
-The manifest file contains split information and metadata for each sample.
+## Step 3: Preprocess Damaged Dataset
 
-## Step 5: Clean Dataset
+
+## Step 3: Clean Dataset
 
 Removes text shapes (bounding boxes) that overlap with damaged areas, while **keeping the damage metadata**.
 This allows models to:
@@ -160,30 +188,28 @@ This allows models to:
 ```bash
 # Remove text shapes in damaged areas, keep damage metadata
 python3 scripts/clean_dataset.py \
-  --input-dir dataset/organized \
+  --input-dir dataset/preprocessed \
   --output-dir dataset/cleaned
 
 # Only mark text shapes as damaged (keep them with 'damaged' flag)
 python3 scripts/clean_dataset.py \
-  --input-dir dataset/organized \
+  --input-dir dataset/preprocessed \
   --output-dir dataset/cleaned \
   --mode mark
 
-# Process only training set with custom threshold (40% overlap = remove)
+# Custom threshold (40% overlap = remove)
 python3 scripts/clean_dataset.py \
-  --input-dir dataset/organized \
+  --input-dir dataset/preprocessed \
   --output-dir dataset/cleaned \
-  --split train \
   --threshold 0.4
 ```
 
 ### Options
 
-- `--input-dir`: Path to organized dataset (default: `dataset/organized`)
+- `--input-dir`: Path to preprocessed dataset (default: `dataset/preprocessed`)
 - `--output-dir`: Path to write cleaned dataset (default: `dataset/cleaned`)
 - `--mode`: `remove` to delete text shapes in damage areas (default), `mark` to add `"damaged"` flag
 - `--threshold`: Intersection threshold 0.0-1.0 (default: 0.25, meaning ≥25% overlap = remove text)
-- `--split`: Process specific split: train/val/test/all (default: all)
 
 ### Output
 
@@ -226,51 +252,116 @@ Example:
 }
 ```
 
-## Step 6: Visualize Cleaned Dataset
+## Step 4: Organize Dataset
+
+
+Removes text shapes (bounding boxes) that overlap with damaged areas, while **keeping the damage metadata**.
+This allows models to:
+- Learn to detect damage regions (using damage boxes)
+- Not train on indistinguishable text in damaged areas (text boxes removed)
+
+### Usage
+
+```bash
+# Remove text shapes in damaged areas, keep damage metadata
+python3 scripts/clean_dataset.py \
+  --input-dir dataset/preprocessed \
+  --output-dir dataset/cleaned
+
+# Only mark text shapes as damaged (keep them with 'damaged' flag)
+python3 scripts/clean_dataset.py \
+  --input-dir dataset/preprocessed \
+  --output-dir dataset/cleaned \
+  --mode mark
+
+# Custom threshold (40% overlap = remove)
+python3 scripts/clean_dataset.py \
+  --input-dir dataset/preprocessed \
+  --output-dir dataset/cleaned \
+  --threshold 0.4
+```
+
+### Options
+
+- `--input-dir`: Path to preprocessed dataset (default: `dataset/preprocessed`)
+- `--output-dir`: Path to write cleaned dataset (default: `dataset/cleaned`)
+- `--mode`: `remove` to delete text shapes in damage areas (default), `mark` to add `"damaged"` flag
+- `--threshold`: Intersection threshold 0.0-1.0 (default: 0.25, meaning ≥25% overlap = remove text)
+
+### Output
+
+Creates cleaned dataset preserving damage metadata:
+```
+dataset/cleaned/
+├── train/
+│   ├── image.jpg
+│   ├── image.json  # Text boxes in damage areas removed, damage info kept
+│   └── ...
+├── val/
+└── test/
+```
+
+Each JSON includes:
+- All original **damage** metadata (boxes for spots/distortions)
+- Filtered **shapes** (text boxes not overlapping damage removed)
+- **cleaning** metadata showing what was removed
+
+Example:
+```json
+{
+  "damage": {
+    "applied": [
+      {"type": "spot", "center": [...], "radius": 85},
+      {"type": "distortion", "box": [...]}
+    ]
+  },
+  "shapes": [
+    {"label": "text1", "points": [...]},
+    {"label": "text3", "points": [...]}
+  ],
+  "cleaning": {
+    "mode": "remove",
+    "threshold": 0.25,
+    "original_shapes": 5,
+    "cleaned_shapes": 3,
+    "removed": 2
+  }
+}
+```
+
+## Step 4: Visualize Cleaned Dataset
 
 Visualize the cleaned dataset to verify damaged shapes were removed:
 
 ```bash
 python3 scripts/visualize_dataset.py \
   --dataset-dir dataset/cleaned \
-  --split train \
   --num-samples 5 \
   --output-dir visualizations_cleaned/
 ```
 
-Now the visualization shows no boxes for shapes that were in damaged areas.
-
 ### Usage
 
 ```bash
-# Visualize a random sample from training set
+# Visualize a random sample
 python3 scripts/visualize_dataset.py \
-  --dataset-dir dataset/organized \
-  --split train
+  --dataset-dir dataset/cleaned
 
 # Visualize specific sample
 python3 scripts/visualize_dataset.py \
-  --dataset-dir dataset/organized \
-  --split train \
+  --dataset-dir dataset/cleaned \
   --sample-id 0_21_0
 
 # Visualize multiple random samples and save to folder
 python3 scripts/visualize_dataset.py \
-  --dataset-dir dataset/organized \
-  --split train \
+  --dataset-dir dataset/cleaned \
   --num-samples 5 \
   --output-dir visualizations/
-
-# Visualize from validation set
-python3 scripts/visualize_dataset.py \
-  --dataset-dir dataset/organized \
-  --split val
 ```
 
 ### Options
 
-- `--dataset-dir`: Path to organized dataset (default: `dataset/organized`)
-- `--split`: Dataset split to visualize: train/val/test (default: train)
+- `--dataset-dir`: Path to dataset (default: `dataset/cleaned`)
 - `--sample-id`: Specific sample ID (random if not specified)
 - `--num-samples`: Number of random samples to visualize (default: 1)
 - `--output-dir`: Save visualizations to this directory (display if not specified)
@@ -347,31 +438,18 @@ python3 scripts/preprocess_damaged.py \
   --input-dir dataset/damaged \
   --output-dir dataset/preprocessed
 
-# 4. Organize into train/val/test splits
-python3 scripts/organize_dataset.py \
+# 4. Clean dataset (remove text boxes in damaged areas)
+python3 scripts/clean_dataset.py \
   --input-dir dataset/preprocessed \
-  --output-dir dataset/organized
+  --output-dir dataset/cleaned
 
 # 5. Visualize samples (optional)
 python3 scripts/visualize_dataset.py \
-  --dataset-dir dataset/organized \
-  --split train \
+  --dataset-dir dataset/cleaned \
   --num-samples 5 \
   --output-dir visualizations/
 
-# Final output: dataset/organized/ contains structured dataset ready for OCR training
-```
-
-## Quick Test Workflow
-
-```bash
-# Test with 3 files
-python3 scripts/generate_damaged_dataset.py \
-  --input-dir dataset/raw \
-  --output-dir dataset/test_damaged \
-  --max-damages 5 \
-  --limit 3 \
-  --seed 42
+# Note: Use organize_dataset.py at the end of your project when ready to split into train/val/test
 
 python3 scripts/preprocess_damaged.py \
   --input-dir dataset/test_damaged \

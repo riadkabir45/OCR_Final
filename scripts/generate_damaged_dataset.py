@@ -313,6 +313,62 @@ def apply_random_damages(img: Image.Image, w: int, h: int) -> tuple[Image.Image,
     return out, {"applied": applied}
 
 
+def _reduce_damage_boxes_by_diff(orig_img: Image.Image, damaged_img: Image.Image,
+                                 applied: list[dict], diff_threshold: int = 20,
+                                 min_pixels: int = 32,
+                                 shrink_only: bool = True) -> list[dict]:
+    """Shrink damage boxes to the visible changed area using grayscale abs-diff.
+
+    - For each damage with a 'box', compute a tight bbox around pixels where
+      |damaged - original| > diff_threshold within that box.
+    - If not enough pixels exceed threshold (min_pixels), keep the original box.
+    - If shrink_only, never expand beyond the original.
+    """
+    if not applied:
+        return applied
+
+    orig_gray = np.array(orig_img.convert("L"), dtype=np.int16)
+    dmg_gray = np.array(damaged_img.convert("L"), dtype=np.int16)
+    diff = np.abs(dmg_gray - orig_gray)
+
+    w, h = orig_img.size
+    new_applied = []
+    for a in applied:
+        if not isinstance(a, dict) or "box" not in a:
+            new_applied.append(a)
+            continue
+        x1, y1, x2, y2 = map(int, a["box"])
+        x1 = max(0, min(w, x1)); x2 = max(0, min(w, x2))
+        y1 = max(0, min(h, y1)); y2 = max(0, min(h, y2))
+        if x2 <= x1 or y2 <= y1:
+            new_applied.append(a)
+            continue
+        sub = diff[y1:y2, x1:x2]
+        mask = sub > int(diff_threshold)
+        if int(mask.sum()) < int(min_pixels):
+            new_applied.append(a)
+            continue
+        ys, xs = np.where(mask)
+        if ys.size == 0 or xs.size == 0:
+            new_applied.append(a)
+            continue
+        nx1 = x1 + int(xs.min())
+        ny1 = y1 + int(ys.min())
+        nx2 = x1 + int(xs.max()) + 1
+        ny2 = y1 + int(ys.max()) + 1
+        if shrink_only:
+            nx1 = max(x1, nx1); ny1 = max(y1, ny1)
+            nx2 = min(x2, nx2); ny2 = min(y2, ny2)
+        if nx2 <= nx1 or ny2 <= ny1:
+            new_applied.append(a)
+            continue
+        a2 = dict(a)
+        a2["box"] = (int(nx1), int(ny1), int(nx2), int(ny2))
+        new_applied.append(a2)
+
+    return new_applied
+
+
 def process_file(json_path: str, input_dir: str, output_dir: str, overwrite: bool = False) -> None:
     with open(json_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
@@ -383,6 +439,12 @@ def main():
     p.add_argument("--max-damages", type=int, default=2, help="Maximum number of damages to apply per image (0..n)")
     p.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
+    p.add_argument("--reduce-damage-boxes", action="store_true",
+                   help="Reduce damage boxes to visible area using grayscale difference")
+    p.add_argument("--diff-threshold", type=int, default=20,
+                   help="Grayscale abs-diff threshold (0-255) to consider a pixel damaged")
+    p.add_argument("--min-damage-pixels", type=int, default=32,
+                   help="Minimum count of above-threshold pixels within a box to shrink it")
     args = p.parse_args()
 
     if args.seed is not None:
@@ -447,6 +509,15 @@ def main():
                     elif typ == "distortion":
                         out_img, meta_d = _apply_distortion(out_img)
                         applied.append(meta_d)
+
+                # Reduce damage boxes by visible diff if enabled
+                if getattr(args, "reduce_damage_boxes", False):
+                    applied = _reduce_damage_boxes_by_diff(
+                        img, out_img, applied,
+                        diff_threshold=getattr(args, "diff_threshold", 20),
+                        min_pixels=getattr(args, "min_damage_pixels", 32),
+                        shrink_only=True,
+                    )
 
                 # Update shapes occlusion flag: we mark shapes occluded if any
                 # applied damage has a box overlapping >=25% (only spot/distortion)
