@@ -5,12 +5,14 @@ Complete workflow for generating damaged OCR datasets and preprocessing them.
 ## Overview
 
 This pipeline takes raw OCR dataset images with JSON annotations and:
+
 1. Generates damaged versions with realistic visual artifacts
+
 2. Preprocesses the damaged images using background subtraction and enhancement
 
 ## Directory Structure
 
-```
+```bash
 OCR_Final/
 ├── dataset/
 │   ├── raw/              # Original images + JSON annotations
