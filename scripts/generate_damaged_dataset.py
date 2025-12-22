@@ -181,6 +181,43 @@ def bbox_intersection_area(b1: tuple[float, float, float, float], b2: tuple[floa
     return (x2 - x1) * (y2 - y1)
 
 
+def _remove_overlapping_text_boxes(shapes: list[dict], damage_boxes: list[tuple[int, int, int, int]], threshold: float = 0.25) -> list[dict]:
+    """Remove text shapes that overlap damage boxes by at least `threshold` fraction.
+
+    Args:
+        shapes: List of shape dicts with `points` as [[x1,y1],[x2,y2]]
+        damage_boxes: List of damage boxes (x1,y1,x2,y2)
+        threshold: Fraction of shape area that must overlap to remove
+
+    Returns:
+        Filtered list of shapes.
+    """
+    cleaned = []
+    for s in shapes:
+        pts = s.get("points", [])
+        if len(pts) < 2:
+            cleaned.append(s)
+            continue
+        x1 = min(pts[0][0], pts[1][0])
+        y1 = min(pts[0][1], pts[1][1])
+        x2 = max(pts[0][0], pts[1][0])
+        y2 = max(pts[0][1], pts[1][1])
+        area = max(0.0, (x2 - x1) * (y2 - y1))
+        if area <= 0:
+            cleaned.append(s)
+            continue
+        bbox = (x1, y1, x2, y2)
+        remove = False
+        for db in damage_boxes:
+            inter = bbox_intersection_area(bbox, db)
+            if inter / area >= threshold:
+                remove = True
+                break
+        if not remove:
+            cleaned.append(s)
+    return cleaned
+
+
 def _create_irregular_spot_overlay(size: tuple[int, int], center: tuple[int, int], radius: float, intensity: float = 1.0) -> Image.Image:
     """Create an RGBA overlay with an irregular near-round dark spot.
 
@@ -389,28 +426,8 @@ def process_file(json_path: str, input_dir: str, output_dir: str, overwrite: boo
     w, h = img.size
     damaged_img, damage_meta = apply_random_damages(img, w, h)
 
-    # Update shapes with occlusion flags when occlusion overlaps bounding boxes
-    occlusions = damage_meta.get("occlusions", [])
+    # Update shapes: either mark occluded or remove overlapping (handled later via flags in main)
     shapes = meta.get("shapes", [])
-    for s in shapes:
-        pts = s.get("points", [])
-        if len(pts) >= 2:
-            # assume bbox [x1,y1],[x2,y2]
-            x1 = min(pts[0][0], pts[1][0])
-            y1 = min(pts[0][1], pts[1][1])
-            x2 = max(pts[0][0], pts[1][0])
-            y2 = max(pts[0][1], pts[1][1])
-            bbox = (x1, y1, x2, y2)
-            occluded = False
-            for ob in occlusions:
-                # ob is (ox1,oy1,ox2,oy2)
-                inter = bbox_intersection_area(bbox, ob)
-                area = (x2 - x1) * (y2 - y1)
-                if area > 0 and (inter / area) >= 0.25:
-                    occluded = True
-                    break
-            if occluded:
-                s["occluded"] = True
 
     # prepare output paths
     os.makedirs(output_dir, exist_ok=True)
@@ -445,7 +462,15 @@ def main():
                    help="Grayscale abs-diff threshold (0-255) to consider a pixel damaged")
     p.add_argument("--min-damage-pixels", type=int, default=32,
                    help="Minimum count of above-threshold pixels within a box to shrink it")
+    p.add_argument("--remove-overlapping-text", action="store_true",
+                   help="Remove text boxes that overlap damage boxes by the given threshold")
+    p.add_argument("--overlap-threshold", type=float, default=0.25,
+                   help="Fraction of text box overlapped by damage required for removal (0.0-1.0)")
     args = p.parse_args()
+
+    # Inform user if thresholds are provided but reduction is disabled
+    if not args.reduce_damage_boxes and (args.diff_threshold != 20 or args.min_damage_pixels != 32):
+        print("NOTE: --diff-threshold / --min-damage-pixels are ignored unless --reduce-damage-boxes is set.")
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -519,30 +544,28 @@ def main():
                         shrink_only=True,
                     )
 
-                # Update shapes occlusion flag: we mark shapes occluded if any
-                # applied damage has a box overlapping >=25% (only spot/distortion)
+                # Handle overlapping text boxes: either remove or mark occluded
                 shapes = meta.get("shapes", [])
-                damage_boxes = []
-                for a in applied:
-                    if "box" in a:
-                        damage_boxes.append(tuple(a["box"]))
-                for s in shapes:
-                    pts = s.get("points", [])
-                    if len(pts) >= 2:
-                        x1 = min(pts[0][0], pts[1][0])
-                        y1 = min(pts[0][1], pts[1][1])
-                        x2 = max(pts[0][0], pts[1][0])
-                        y2 = max(pts[0][1], pts[1][1])
-                        bbox = (x1, y1, x2, y2)
-                        occluded = False
-                        for ob in damage_boxes:
-                            inter = bbox_intersection_area(bbox, ob)
+                damage_boxes = [tuple(a["box"]) for a in applied if "box" in a]
+                if getattr(args, "remove_overlapping_text", False):
+                    shapes = _remove_overlapping_text_boxes(shapes, damage_boxes, threshold=getattr(args, "overlap_threshold", 0.25))
+                else:
+                    for s in shapes:
+                        pts = s.get("points", [])
+                        if len(pts) >= 2:
+                            x1 = min(pts[0][0], pts[1][0])
+                            y1 = min(pts[0][1], pts[1][1])
+                            x2 = max(pts[0][0], pts[1][0])
+                            y2 = max(pts[0][1], pts[1][1])
+                            bbox = (x1, y1, x2, y2)
                             area = (x2 - x1) * (y2 - y1)
-                            if area > 0 and (inter / area) >= 0.25:
-                                occluded = True
-                                break
-                        if occluded:
-                            s["occluded"] = True
+                            if area <= 0:
+                                continue
+                            for ob in damage_boxes:
+                                inter = bbox_intersection_area(bbox, ob)
+                                if inter / area >= getattr(args, "overlap_threshold", 0.25):
+                                    s["occluded"] = True
+                                    break
 
                 os.makedirs(args.output_dir, exist_ok=True)
                 out_img_path = os.path.join(args.output_dir, img_name)
@@ -553,6 +576,8 @@ def main():
                 out_img.save(out_img_path)
                 meta_out = dict(meta)
                 meta_out["damage"] = {"applied": applied}
+                # Persist updated shapes list (removed or marked)
+                meta_out["shapes"] = shapes
                 meta_out["imagePath"] = os.path.basename(out_img_path)
                 with open(out_json_path, "w", encoding="utf-8") as f:
                     json.dump(meta_out, f, ensure_ascii=False, indent=2)
